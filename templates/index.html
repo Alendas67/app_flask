@@ -1,0 +1,240 @@
+<!-- 
+    HTML-страница для загрузки изображения и отображения результатов классификации.
+    Использует JavaScript (Fetch API) для отправки файла на сервер без перезагрузки страницы.
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Классификация изображений VGG19</title>
+    <style>
+        /* Базовые стили для карточки, области загрузки, кнопок и результатов */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f7fa;        /* светлый фон страницы */
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1); /* тень */
+        }
+        /* Область, на которую можно нажать или перетащить файл */
+        .upload-area {
+            border: 2px dashed #3498db;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            background: #f8faff;
+            transition: 0.2s;
+        }
+        .upload-area:hover {
+            background: #eef2fc;
+        }
+        #file-input {
+            display: none;          /* скрываем стандартный инпут, используем кастомизированную область */
+        }
+        .btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: 0.2s;
+        }
+        .btn:disabled {
+            background: #95a5a6;    /* серый цвет для неактивной кнопки */
+            cursor: not-allowed;
+        }
+        .preview {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .preview img {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 8px;
+        }
+        .results {
+            margin-top: 20px;
+            padding: 15px;
+            background: #ecf0f1;
+            border-radius: 8px;
+        }
+        /* Стиль для каждого предсказания */
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            padding: 6px 12px;
+            background: white;
+            border-radius: 20px;
+        }
+        .label {
+            font-weight: bold;
+        }
+        .probability {
+            color: #27ae60;   /* зелёный цвет для процентов */
+        }
+        /* Анимация загрузки (спиннер) */
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .error {
+            color: #e74c3c;
+            background: #fadbd8;
+            padding: 10px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🖼️ Классификация изображений (VGG19)</h1>
+    <div class="card">
+        <!-- Область для перетаскивания/клика -->
+        <div class="upload-area" id="upload-area">
+            <p>📂 Нажмите или перетащите файл сюда</p>
+            <p style="font-size: 12px; color: #7f8c8d;">PNG, JPG, JPEG, BMP, TIFF</p>
+        </div>
+        <!-- Скрытый инпут для выбора файла -->
+        <input type="file" id="file-input" accept="image/*">
+        <div style="text-align: center;">
+            <button class="btn" id="predict-btn" disabled>Распознать</button>
+        </div>
+        <!-- Контейнер для предпросмотра картинки -->
+        <div class="preview" id="preview"></div>
+        <!-- Контейнер для результатов -->
+        <div class="results" id="results" style="display: none;"></div>
+        <!-- Контейнер для анимации загрузки -->
+        <div id="loading" style="display: none;">
+            <div class="loader"></div>
+            <p style="text-align:center;">Анализируем...</p>
+        </div>
+    </div>
+
+    <script>
+        // Получаем ссылки на DOM-элементы
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const predictBtn = document.getElementById('predict-btn');
+        const previewDiv = document.getElementById('preview');
+        const resultsDiv = document.getElementById('results');
+        const loadingDiv = document.getElementById('loading');
+        let currentFile = null;   // переменная для хранения выбранного файла
+
+        // Обработчик клика по области загрузки – открываем диалог выбора файла
+        uploadArea.addEventListener('click', () => fileInput.click());
+        // Обработчики drag & drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();        // обязательно, чтобы разрешить drop
+            uploadArea.style.background = '#eef2fc';
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.style.background = '#f8faff';
+        });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.style.background = '#f8faff';
+            if (e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);   // берём первый перетащенный файл
+            }
+        });
+        // Когда пользователь выбрал файл через диалог
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // Функция обработки выбранного файла
+        function handleFile(file) {
+            // Список разрешённых MIME-типов
+            const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/bmp', 'image/tiff'];
+            if (!allowed.includes(file.type)) {
+                alert('Неподдерживаемый формат. Загрузите PNG, JPG, JPEG, BMP или TIFF.');
+                return;
+            }
+            currentFile = file;
+            // Отображаем превью изображения через FileReader
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewDiv.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
+            };
+            reader.readAsDataURL(file);
+            // Активируем кнопку "Распознать"
+            predictBtn.disabled = false;
+            // Скрываем предыдущие результаты
+            resultsDiv.style.display = 'none';
+        }
+
+        // Обработчик нажатия на кнопку "Распознать"
+        predictBtn.addEventListener('click', async () => {
+            if (!currentFile) return;
+
+            // Формируем FormData для отправки файла
+            const formData = new FormData();
+            formData.append('file', currentFile);
+
+            // Блокируем кнопку и показываем спиннер
+            predictBtn.disabled = true;
+            loadingDiv.style.display = 'block';
+            resultsDiv.style.display = 'none';
+
+            try {
+                // Отправляем POST-запрос на сервер
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    // Формируем HTML с результатами
+                    let html = '<h3>🔍 Результаты (топ-5):</h3>';
+                    data.predictions.forEach(p => {
+                        const percent = (p.probability * 100).toFixed(2);
+                        html += `<div class="result-item">
+                                    <span class="label">${p.label}</span>
+                                    <span class="probability">${percent}%</span>
+                                 </div>`;
+                    });
+                    resultsDiv.innerHTML = html;
+                } else {
+                    // Ошибка от сервера
+                    resultsDiv.innerHTML = `<div class="error">❌ Ошибка: ${data.error || 'Неизвестная ошибка'}</div>`;
+                }
+                resultsDiv.style.display = 'block';
+            } catch (err) {
+                // Ошибка сети или другая
+                resultsDiv.innerHTML = `<div class="error">❌ Ошибка соединения: ${err.message}</div>`;
+                resultsDiv.style.display = 'block';
+            } finally {
+                // По окончании (успех или ошибка) освобождаем кнопку и скрываем спиннер
+                predictBtn.disabled = false;
+                loadingDiv.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
